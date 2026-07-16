@@ -1,0 +1,6 @@
+requests
+requests-pkcs12
+openpyxl
+reportlab
+cryptography
+pywin32

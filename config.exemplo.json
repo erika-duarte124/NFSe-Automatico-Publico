@@ -1,0 +1,25 @@
+{
+  "ambiente": "producao",
+  "pasta_saida": "C:/Users/SEU_USUARIO/Downloads/NFSe-Automatico",
+  "agendamento": {
+    "mensal":    {"ativo": true,  "dia_mes": 1, "hora": "09:00"},
+    "semanal":   {"ativo": false, "dia_semana": 2, "hora": "09:00"},
+    "quinzenal": {"ativo": false, "dia_semana": 2, "hora": "09:00"}
+  },
+  "empresas": [
+    {
+      "nome": "RMW CONSULTORIA E SERVICOS LTDA",
+      "cnpj": "18.118.264/0001-00",
+      "certificado": "C:/Certificados/rmw_consultoria.pfx",
+      "senha": "senha-do-certificado",
+      "usar_cnpj_consulta": false
+    },
+    {
+      "nome": "FINE BUSINESS LTDA",
+      "cnpj": "41.948.819/0001-62",
+      "certificado": "C:/Certificados/fine_business.pfx",
+      "senha": null,
+      "usar_cnpj_consulta": false
+    }
+  ]
+}
