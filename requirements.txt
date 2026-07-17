@@ -4,3 +4,4 @@ openpyxl
 reportlab
 cryptography
 pywin32
+win11toast

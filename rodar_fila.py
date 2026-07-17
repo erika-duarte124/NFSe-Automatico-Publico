@@ -30,7 +30,7 @@ ARQ_CONFIG = PASTA / "config.json"
 
 def carregar_empresas() -> list[str]:
     config = json.loads(ARQ_CONFIG.read_text(encoding="utf-8"))
-    return [e["nome"] for e in config.get("empresas", [])]
+    return [e["nome"] for grupo in config.get("grupos", []) for e in grupo.get("empresas", [])]
 
 
 EMPRESAS = carregar_empresas()

@@ -35,6 +35,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 import baixar_nfse as nfse
+import despacho
 import seguranca
 
 # Eventos que mudam a situação da nota (códigos do Sistema Nacional NFS-e)
@@ -327,7 +328,7 @@ def main() -> int:
     nfse.definir_ambiente(config.get("ambiente", "producao"))
     pasta_saida = Path(config.get("pasta_saida", nfse.PASTA_SCRIPT / "notas"))
 
-    empresas = config.get("empresas", [])
+    empresas = despacho.empresas_de(config)
     if args.empresa:
         empresas = [e for e in empresas if args.empresa.lower() in e["nome"].lower()]
     if not empresas:

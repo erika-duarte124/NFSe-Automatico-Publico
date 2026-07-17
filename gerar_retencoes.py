@@ -26,6 +26,7 @@ from datetime import datetime
 from pathlib import Path
 
 import baixar_nfse as nfse
+import despacho
 import leitor_nfse_excel as leitor
 
 # Eventos que mudam a situação da nota (mesmos códigos do Relatório Simples)
@@ -87,7 +88,7 @@ def main() -> int:
 
     config = nfse.carregar_json(nfse.ARQ_CONFIG, {})
     pasta_saida = Path(config.get("pasta_saida", nfse.PASTA_SCRIPT / "notas"))
-    empresas = config.get("empresas", [])
+    empresas = despacho.empresas_de(config)
     if args.empresa:
         empresas = [e for e in empresas if args.empresa.lower() in e["nome"].lower()]
     if not empresas:

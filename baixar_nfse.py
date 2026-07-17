@@ -589,7 +589,7 @@ def main() -> int:
     config = carregar_json(ARQ_CONFIG, {})
     definir_ambiente(config.get("ambiente", "producao"))
     pasta_saida = Path(config.get("pasta_saida", PASTA_SCRIPT / "notas"))
-    empresas = config.get("empresas", [])
+    empresas = despacho.empresas_de(config)
     if args.empresa:
         empresas = [e for e in empresas if args.empresa.lower() in e["nome"].lower()]
     if not empresas:

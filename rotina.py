@@ -2,10 +2,12 @@
 """
 Rotina agendada de retirada de NFS-e.
 
-Chamada UMA VEZ POR DIA pelo Agendador de Tarefas do Windows, sempre no
-mesmo horário (definido durante a configuração inicial). O próprio script
-decide, consultando o "agendamento" do config.json, se hoje é dia de rodar
-algo — e o quê.
+Chamada UMA VEZ POR DIA por grupo, pelo Agendador de Tarefas do Windows
+(--grupo "Nome do Grupo" --modo mensal/semanal/quinzenal), sempre no mesmo
+horário (definido durante a configuração inicial). O próprio script decide,
+consultando o "agendamento" daquele grupo no config.json, se hoje é dia de
+rodar algo — e o quê. Cada grupo tem sua própria agenda e seu próprio
+estado de controle (rotina_estado.json -> "grupos" -> nome do grupo).
 
 Frequências suportadas (configuráveis em config.json -> "agendamento"),
 podendo ativar até 2 ao mesmo tempo:
@@ -23,6 +25,14 @@ podendo ativar até 2 ao mesmo tempo:
 Se hoje for dia de fechamento mensal, semanal/quinzenal não rodam nesse
 dia (evita duplicar trabalho).
 
+Cada passo (baixar, completar PDFs, cada relatório) tem um limite de tempo
+de segurança (TIMEOUT_PASSO_SEGUNDOS) — se uma empresa travar por qualquer
+motivo, só aquele passo é cancelado e registrado como falha; a fila segue
+para a próxima empresa em vez de travar indefinidamente.
+
+Ao final de cada execução, uma notificação do Windows resume o resultado
+(quantas empresas OK, quantas com falha).
+
 Tudo é registrado em rotina.log. Estado de controle em rotina_estado.json.
 """
 
@@ -38,6 +48,9 @@ PASTA = despacho.PASTA
 LOG = PASTA / "rotina.log"
 ARQ_ESTADO = PASTA / "rotina_estado.json"
 ARQ_CONFIG = PASTA / "config.json"
+ARQ_ULTIMA_EXECUCAO = PASTA / "ultima_execucao.json"
+
+TIMEOUT_PASSO_SEGUNDOS = 30 * 60  # limite de segurança por passo (folgado, p/ empresas com muitas notas)
 
 
 def carregar_config() -> dict:
@@ -57,7 +70,13 @@ def mes_anterior(d: date) -> str:
 
 
 def pipeline(filtro_empresa: str, competencia: str) -> int:
-    """Roda baixar -> completar PDFs -> 3 relatórios, p/ 1 empresa/mês."""
+    """Roda baixar -> completar PDFs -> 3 relatórios, p/ 1 empresa/mês.
+
+    Cada passo tem um limite de tempo (TIMEOUT_PASSO_SEGUNDOS): se travar,
+    o passo é cancelado e registrado como falha. Se o PRIMEIRO passo
+    (baixar XML+PDF) falhar, os demais passos dessa empresa são pulados —
+    não faz sentido gerar relatório sem ter conseguido baixar nada, e isso
+    limita o pior caso (uma empresa com problema) a 1 timeout, não 5."""
     base = despacho.comando_base()
     passos = [
         ("baixar XML+PDF",      base + ["baixar_nfse", "--empresa", filtro_empresa, "--competencia", competencia]),
@@ -67,39 +86,89 @@ def pipeline(filtro_empresa: str, competencia: str) -> int:
         ("Relatorio PDF",       base + ["gerar_relatorio_pdf", "--empresa", filtro_empresa, "--competencia", competencia]),
     ]
     falhas = 0
-    for titulo, comando in passos:
+    for indice, (titulo, comando) in enumerate(passos):
         registrar(f"  >>> {filtro_empresa} {competencia} - {titulo}")
         with open(LOG, "a", encoding="utf-8") as saida:
-            r = subprocess.run(comando, stdout=saida, stderr=subprocess.STDOUT, cwd=str(PASTA))
-        if r.returncode != 0:
-            falhas += 1
+            try:
+                r = subprocess.run(comando, stdout=saida, stderr=subprocess.STDOUT,
+                                   cwd=str(PASTA), timeout=TIMEOUT_PASSO_SEGUNDOS)
+                codigo = r.returncode
+            except subprocess.TimeoutExpired:
+                codigo = None
+        if codigo == 0:
+            continue
+        falhas += 1
+        if codigo is None:
+            registrar(f"  <<< FALHOU (excedeu {TIMEOUT_PASSO_SEGUNDOS // 60} min de limite de segurança): "
+                      f"{filtro_empresa} {competencia} - {titulo}")
+        else:
             registrar(f"  <<< FALHOU: {filtro_empresa} {competencia} - {titulo}")
+        if indice == 0:
+            falhas += len(passos) - 1  # conta os passos pulados como falha também
+            registrar(f"  <<< Pulando os demais passos de {filtro_empresa} "
+                      f"(download falhou — sem dados pra gerar relatório)")
+            break
     return falhas
 
 
-def executar_para_todas(empresas: list[str], competencia: str, rotulo: str) -> None:
-    registrar(f"======== {rotulo} — competência {competencia} ========")
-    total_falhas = 0
+def notificar(titulo: str, mensagem: str) -> None:
+    try:
+        from win11toast import toast
+        toast(titulo, mensagem, duration="short")
+    except Exception as e:
+        registrar(f"  (Não foi possível mostrar a notificação do Windows: {e})")
+
+
+def executar_para_todas(grupo: str, empresas: list[str], competencia: str, rotulo: str) -> None:
+    registrar(f"======== [{grupo}] {rotulo} — competência {competencia} ========")
+    resultados = {}
     for empresa in empresas:
-        total_falhas += pipeline(empresa, competencia)
-    if total_falhas:
-        registrar(f"======== {rotulo} TERMINADO COM {total_falhas} FALHA(S) ========")
+        falhas = pipeline(empresa, competencia)
+        resultados[empresa] = (falhas == 0)
+
+    ok = [nome for nome, sucesso in resultados.items() if sucesso]
+    com_falha = [nome for nome, sucesso in resultados.items() if not sucesso]
+
+    ultima_execucao = json.loads(ARQ_ULTIMA_EXECUCAO.read_text(encoding="utf-8")) if ARQ_ULTIMA_EXECUCAO.exists() else {}
+    ultima_execucao.setdefault("grupos", {})[grupo] = {
+        "rotulo": rotulo,
+        "competencia": competencia,
+        "data": date.today().isoformat(),
+        "empresas_ok": ok,
+        "empresas_com_falha": com_falha,
+    }
+    ARQ_ULTIMA_EXECUCAO.write_text(json.dumps(ultima_execucao, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    if com_falha:
+        registrar(f"======== [{grupo}] {rotulo} TERMINADO — {len(ok)} OK, {len(com_falha)} COM FALHA ========")
+        notificar("NFS-e Automático", f"[{grupo}] {rotulo.title()}: {len(ok)} empresa(s) OK, "
+                                       f"{len(com_falha)} com falha. Abra o programa para ver detalhes.")
     else:
-        registrar(f"======== {rotulo} TERMINADO COM SUCESSO ========")
+        registrar(f"======== [{grupo}] {rotulo} TERMINADO COM SUCESSO ========")
+        notificar("NFS-e Automático", f"[{grupo}] {rotulo.title()}: {len(ok)} empresa(s) concluída(s) com sucesso.")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--grupo", required=True, help='nome do grupo (deve bater com "nome" em config.json -> grupos)')
     parser.add_argument("--modo", choices=["auto", "mensal", "semanal", "quinzenal"], default="auto",
-                        help="qual verificação rodar (a tarefa do Agendador sempre chama sem --modo, ou seja, 'auto')")
+                        help="qual verificação rodar (a tarefa do Agendador sempre chama com --modo fixo por grupo)")
     args = parser.parse_args()
 
     config = carregar_config()
-    empresas = [e["nome"] for e in config.get("empresas", [])]
-    agenda = config.get("agendamento", {})
+    grupo_cfg = next((g for g in config.get("grupos", []) if g.get("nome") == args.grupo), None)
+    if grupo_cfg is None:
+        registrar(f"Grupo \"{args.grupo}\" não encontrado no config.json — nada a fazer.")
+        return
+    empresas = [e["nome"] for e in grupo_cfg.get("empresas", [])]
+    agenda = grupo_cfg.get("agendamento", {})
 
     hoje = date.today()
-    estado = json.loads(ARQ_ESTADO.read_text(encoding="utf-8")) if ARQ_ESTADO.exists() else {}
+    estado_completo = json.loads(ARQ_ESTADO.read_text(encoding="utf-8")) if ARQ_ESTADO.exists() else {}
+    estado = estado_completo.setdefault("grupos", {}).setdefault(args.grupo, {})
+
+    def salvar_estado():
+        ARQ_ESTADO.write_text(json.dumps(estado_completo, indent=2, ensure_ascii=False), encoding="utf-8")
 
     # ---- MENSAL: dia fixo do mês, fecha o mês anterior, com recuperação de atraso
     cfg_mensal = agenda.get("mensal", {})
@@ -111,13 +180,13 @@ def main() -> None:
 
     if args.modo in ("auto", "mensal") and eh_dia_de_fechamento:
         if hoje == devida:
-            registrar(f"Hoje é o dia do fechamento mensal de {mes_fechamento}.")
+            registrar(f"[{args.grupo}] Hoje é o dia do fechamento mensal de {mes_fechamento}.")
         else:
-            registrar(f"Fechamento mensal de {mes_fechamento} estava atrasado "
+            registrar(f"[{args.grupo}] Fechamento mensal de {mes_fechamento} estava atrasado "
                       f"(devido em {devida:%d/%m}); executando agora.")
-        executar_para_todas(empresas, mes_fechamento, "FECHAMENTO MENSAL")
+        executar_para_todas(args.grupo, empresas, mes_fechamento, "FECHAMENTO MENSAL")
         estado["ultimo_fechamento_mensal"] = mes_fechamento
-        ARQ_ESTADO.write_text(json.dumps(estado, indent=2), encoding="utf-8")
+        salvar_estado()
         return
 
     if args.modo == "auto" and eh_dia_de_fechamento:
@@ -129,29 +198,29 @@ def main() -> None:
     cfg_semanal = agenda.get("semanal", {})
     if args.modo in ("auto", "semanal") and cfg_semanal.get("ativo"):
         if cfg_mensal.get("ativo") and eh_dia_de_fechamento:
-            registrar("Hoje também é dia de fechamento mensal; pulando a retirada semanal.")
+            registrar(f"[{args.grupo}] Hoje também é dia de fechamento mensal; pulando a retirada semanal.")
         elif hoje.weekday() == cfg_semanal.get("dia_semana"):
-            registrar("Hoje é dia de retirada semanal do mês atual.")
-            executar_para_todas(empresas, competencia_atual, "RETIRADA SEMANAL")
+            registrar(f"[{args.grupo}] Hoje é dia de retirada semanal do mês atual.")
+            executar_para_todas(args.grupo, empresas, competencia_atual, "RETIRADA SEMANAL")
             return
 
     # ---- QUINZENAL: um dia da semana, só a cada 14 dias
     cfg_quinzenal = agenda.get("quinzenal", {})
     if args.modo in ("auto", "quinzenal") and cfg_quinzenal.get("ativo"):
         if cfg_mensal.get("ativo") and eh_dia_de_fechamento:
-            registrar("Hoje também é dia de fechamento mensal; pulando a retirada quinzenal.")
+            registrar(f"[{args.grupo}] Hoje também é dia de fechamento mensal; pulando a retirada quinzenal.")
             return
         ultima = estado.get("ultima_execucao_quinzenal")
         ultima_data = date.fromisoformat(ultima) if ultima else None
         due_por_data = ultima_data is None or (hoje - ultima_data).days >= 14
         if hoje.weekday() == cfg_quinzenal.get("dia_semana") and due_por_data:
-            registrar("Hoje é dia de retirada quinzenal do mês atual.")
-            executar_para_todas(empresas, competencia_atual, "RETIRADA QUINZENAL")
+            registrar(f"[{args.grupo}] Hoje é dia de retirada quinzenal do mês atual.")
+            executar_para_todas(args.grupo, empresas, competencia_atual, "RETIRADA QUINZENAL")
             estado["ultima_execucao_quinzenal"] = hoje.isoformat()
-            ARQ_ESTADO.write_text(json.dumps(estado, indent=2), encoding="utf-8")
+            salvar_estado()
             return
 
-    registrar("Nada agendado para hoje.")
+    registrar(f"[{args.grupo}] Nada agendado para hoje.")
 
 
 if __name__ == "__main__":

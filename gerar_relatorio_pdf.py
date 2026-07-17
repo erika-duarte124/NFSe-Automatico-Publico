@@ -32,6 +32,7 @@ from reportlab.platypus import (BaseDocTemplate, Frame, PageTemplate,
                                 Paragraph, Spacer, Table, TableStyle)
 
 import baixar_nfse as nfse
+import despacho
 import leitor_nfse_excel as leitor
 
 CINZA = colors.HexColor("#777777")
@@ -320,7 +321,7 @@ def main() -> int:
 
     config = nfse.carregar_json(nfse.ARQ_CONFIG, {})
     pasta_saida = Path(config.get("pasta_saida", nfse.PASTA_SCRIPT / "notas"))
-    empresas = config.get("empresas", [])
+    empresas = despacho.empresas_de(config)
     if args.empresa:
         empresas = [e for e in empresas if args.empresa.lower() in e["nome"].lower()]
     if not empresas:

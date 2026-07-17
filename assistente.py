@@ -29,13 +29,23 @@ import seguranca
 
 SUBCOMANDOS = {
     "baixar_nfse", "gerar_relatorio", "gerar_relatorio_pdf",
-    "gerar_retencoes", "rotina", "rodar_fila",
+    "gerar_retencoes", "rotina", "rodar_fila", "backfill",
 }
 
 PASTA = despacho.PASTA
 ARQ_CONFIG = PASTA / "config.json"
 PASTA_SAIDA_PADRAO = str(Path.home() / "Downloads" / "NFSe-Automatico")
 LINKEDIN_URL = "https://www.linkedin.com/in/erika-duarte-tech/"
+LIMITE_EMPRESAS = 20
+LIMITE_GRUPOS = 3
+LIMITE_POR_GRUPO = 10
+GRUPO_PADRAO = "Grupo A"
+
+AGENDAMENTO_PADRAO = {
+    "mensal":    {"ativo": True,  "dia_mes": 1, "hora": "09:00"},
+    "semanal":   {"ativo": False, "dia_semana": 2, "hora": "09:00"},
+    "quinzenal": {"ativo": False, "dia_semana": 2, "hora": "09:00"},
+}
 
 DIAS_SEMANA = ["Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira",
                "Sexta-feira", "Sábado", "Domingo"]
@@ -72,36 +82,37 @@ def certificados_vencidos(empresas: list[dict]) -> list[str]:
 NOME_TAREFA_PREFIXO = "NFSe Automatico"
 
 
-def registrar_tarefas_agendador(agendamento: dict) -> list[str]:
-    """Cria (ou remove, se desativada) 1 tarefa por frequência no Agendador
-    de Tarefas do Windows, via PowerShell Register-ScheduledTask — mesma
+def registrar_tarefas_agendador(agendamentos_por_grupo: dict) -> list[str]:
+    """Cria (ou remove, se desativada) 1 tarefa por grupo+frequência no
+    Agendador de Tarefas do Windows, via PowerShell Register-ScheduledTask —
     tarefa diária, com StartWhenAvailable (recupera atraso se o PC estava
     desligado). Retorna lista de mensagens de erro (vazia se tudo OK)."""
     erros = []
 
-    for freq, cfg in agendamento.items():
-        nome_tarefa = f"{NOME_TAREFA_PREFIXO} - {freq.capitalize()}"
-        if not cfg.get("ativo"):
-            subprocess.run(
-                ["powershell", "-NoProfile", "-Command",
-                 f'Unregister-ScheduledTask -TaskName "{nome_tarefa}" -Confirm:$false -ErrorAction SilentlyContinue'],
-                capture_output=True, text=True)
-            continue
+    for grupo, agendamento in agendamentos_por_grupo.items():
+        for freq, cfg in agendamento.items():
+            nome_tarefa = f"{NOME_TAREFA_PREFIXO} - {grupo} - {freq.capitalize()}"
+            if not cfg.get("ativo"):
+                subprocess.run(
+                    ["powershell", "-NoProfile", "-Command",
+                     f'Unregister-ScheduledTask -TaskName "{nome_tarefa}" -Confirm:$false -ErrorAction SilentlyContinue'],
+                    capture_output=True, text=True)
+                continue
 
-        comando = despacho.comando_base(silencioso=True) + ["rotina", "--modo", freq]
-        argumentos = " ".join(f'"{a}"' if " " in a else a for a in comando[1:])
-        script = (
-            f"$acao = New-ScheduledTaskAction -Execute '{comando[0]}' "
-            f"-Argument '{argumentos}' -WorkingDirectory '{PASTA}'; "
-            f"$gatilho = New-ScheduledTaskTrigger -Daily -At {cfg['hora']}; "
-            f"$config = New-ScheduledTaskSettingsSet -StartWhenAvailable -DontStopIfGoingOnBatteries; "
-            f'Register-ScheduledTask -TaskName "{nome_tarefa}" -Action $acao -Trigger $gatilho '
-            f"-Settings $config -Force | Out-Null"
-        )
-        r = subprocess.run(["powershell", "-NoProfile", "-Command", script],
-                           capture_output=True, text=True)
-        if r.returncode != 0:
-            erros.append(f"{nome_tarefa}: {r.stderr.strip() or r.stdout.strip()}")
+            comando = despacho.comando_base(silencioso=True) + ["rotina", "--grupo", grupo, "--modo", freq]
+            argumentos = " ".join(f'"{a}"' if " " in a else a for a in comando[1:])
+            script = (
+                f"$acao = New-ScheduledTaskAction -Execute '{comando[0]}' "
+                f"-Argument '{argumentos}' -WorkingDirectory '{PASTA}'; "
+                f"$gatilho = New-ScheduledTaskTrigger -Daily -At {cfg['hora']}; "
+                f"$config = New-ScheduledTaskSettingsSet -StartWhenAvailable -DontStopIfGoingOnBatteries; "
+                f'Register-ScheduledTask -TaskName "{nome_tarefa}" -Action $acao -Trigger $gatilho '
+                f"-Settings $config -Force | Out-Null"
+            )
+            r = subprocess.run(["powershell", "-NoProfile", "-Command", script],
+                               capture_output=True, text=True)
+            if r.returncode != 0:
+                erros.append(f"{nome_tarefa}: {r.stderr.strip() or r.stdout.strip()}")
 
     return erros
 
@@ -114,23 +125,24 @@ class Assistente(tk.Tk):
         self.resizable(False, False)
 
         self.pasta_saida = tk.StringVar(value=PASTA_SAIDA_PADRAO)
-        self.empresas: list[dict] = []
+        self.empresas: list[dict] = []          # cada empresa tem uma chave "grupo"
+        self.agendamentos_por_grupo: dict = {}  # nome do grupo -> agendamento
         self.editando_index: int | None = None
         self.avisar_cert_vencido = True
         self.periodo_inicial = {"tipo": "completo"}
-        self.agendamento = {
-            "mensal":    {"ativo": True,  "dia_mes": 1, "hora": "09:00"},
-            "semanal":   {"ativo": False, "dia_semana": 2, "hora": "09:00"},
-            "quinzenal": {"ativo": False, "dia_semana": 2, "hora": "09:00"},
-        }
 
         if ARQ_CONFIG.exists():
             config_existente = json.loads(ARQ_CONFIG.read_text(encoding="utf-8"))
             self.pasta_saida.set(config_existente.get("pasta_saida", PASTA_SAIDA_PADRAO).replace("/", "\\"))
-            self.empresas = config_existente.get("empresas", [])
             self.avisar_cert_vencido = config_existente.get("avisar_cert_vencido", True)
             self.periodo_inicial = config_existente.get("periodo_inicial", self.periodo_inicial)
-            self.agendamento = config_existente.get("agendamento", self.agendamento)
+            for grupo in config_existente.get("grupos", []):
+                nome_grupo = grupo.get("nome", GRUPO_PADRAO)
+                self.agendamentos_por_grupo[nome_grupo] = grupo.get("agendamento", AGENDAMENTO_PADRAO)
+                for emp in grupo.get("empresas", []):
+                    emp = dict(emp)
+                    emp["grupo"] = nome_grupo
+                    self.empresas.append(emp)
 
         self._montar_rodape_contato()
 
@@ -189,6 +201,31 @@ class Assistente(tk.Tk):
         config_existente["avisar_cert_vencido"] = False
         ARQ_CONFIG.write_text(json.dumps(config_existente, indent=2, ensure_ascii=False), encoding="utf-8")
 
+    def _mostrar_limite_atingido(self):
+        janela = tk.Toplevel(self)
+        janela.title("Limite de empresas")
+        janela.resizable(False, False)
+        janela.grab_set()
+
+        tk.Label(janela, text="Esse é um programa gratuito :)", font=("Segoe UI", 11, "bold")).pack(padx=24, pady=(20, 6))
+        tk.Label(janela, justify="center", wraplength=340, text=
+                 f"Ele foi feito pra ajudar escritórios de pequeno e médio porte — por isso o "
+                 f"cadastro vai até {LIMITE_EMPRESAS} empresas.\n"
+                 "Caso precise de algum suporte maior, entre em contato com a desenvolvedora."
+                 ).pack(padx=24, pady=(0, 14))
+
+        centro = tk.Frame(janela)
+        centro.pack(pady=(0, 4))
+        tk.Label(centro, text="Link LinkedIn:  ").pack(side="left")
+        link = tk.Label(centro, text="LinkedIn", fg="#0a66c2", font=("Segoe UI", 10, "underline"), cursor="hand2")
+        link.pack(side="left")
+        link.bind("<Button-1>", lambda e: webbrowser.open(LINKEDIN_URL))
+
+        tk.Label(janela, text="Developed by: Erika Duarte", font=("Segoe UI", 9)).pack(pady=(2, 0))
+
+        tk.Button(janela, text="Entendi", width=12, command=janela.destroy).pack(pady=(10, 20))
+        janela.transient(self)
+
     def limpar_container(self):
         for w in self.container.winfo_children():
             w.destroy()
@@ -235,35 +272,46 @@ class Assistente(tk.Tk):
         self.var_cnpj = tk.StringVar()
         tk.Entry(form, textvariable=self.var_cnpj, width=25).grid(row=1, column=1, sticky="w", pady=(6, 0))
 
-        tk.Label(form, text="Certificado (.pfx)").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        tk.Label(form, text="Grupo").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        self.var_grupo = tk.StringVar(value=self._grupos_existentes()[0] if self._grupos_existentes() else GRUPO_PADRAO)
+        self.combo_grupo = ttk.Combobox(form, textvariable=self.var_grupo, width=22,
+                                         values=self._grupos_existentes())
+        self.combo_grupo.grid(row=2, column=1, sticky="w", pady=(6, 0))
+        tk.Label(form, text="(até 3 grupos, 10 empresas cada — digite um nome novo pra criar outro grupo)",
+                 fg="#777", font=("Segoe UI", 8)).grid(row=2, column=2, sticky="w", padx=(8, 0), pady=(6, 0))
+
+        tk.Label(form, text="Certificado (.pfx)").grid(row=3, column=0, sticky="w", pady=(6, 0))
         self.var_cert_label = tk.StringVar(value="(nenhum arquivo escolhido)")
         self.var_cert_caminho = ""
-        tk.Label(form, textvariable=self.var_cert_label, fg="#555", anchor="w", width=32).grid(row=2, column=1, sticky="w", pady=(6, 0))
-        tk.Button(form, text="Escolher...", command=self.escolher_certificado).grid(row=2, column=2, sticky="w", pady=(6, 0))
+        tk.Label(form, textvariable=self.var_cert_label, fg="#555", anchor="w", width=32).grid(row=3, column=1, sticky="w", pady=(6, 0))
+        tk.Button(form, text="Escolher...", command=self.escolher_certificado).grid(row=3, column=2, sticky="w", pady=(6, 0))
 
-        tk.Label(form, text="Senha do certificado").grid(row=3, column=0, sticky="w", pady=(6, 0))
+        tk.Label(form, text="Senha do certificado").grid(row=4, column=0, sticky="w", pady=(6, 0))
         self.var_senha = tk.StringVar()
-        tk.Entry(form, textvariable=self.var_senha, show="*", width=25).grid(row=3, column=1, sticky="w", pady=(6, 0))
+        tk.Entry(form, textvariable=self.var_senha, show="*", width=25).grid(row=4, column=1, sticky="w", pady=(6, 0))
 
         self.var_status = tk.StringVar(value="")
-        tk.Label(form, textvariable=self.var_status, anchor="w").grid(row=4, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        tk.Label(form, textvariable=self.var_status, anchor="w").grid(row=5, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
         botoes = tk.Frame(form)
-        botoes.grid(row=5, column=0, columnspan=3, sticky="w", pady=(10, 0))
+        botoes.grid(row=6, column=0, columnspan=3, sticky="w", pady=(10, 0))
         tk.Button(botoes, text="Validar certificado", command=self.acao_validar).pack(side="left")
         self.btn_adicionar = tk.Button(botoes, text="Adicionar empresa", state="disabled", command=self.acao_adicionar)
         self.btn_adicionar.pack(side="left", padx=(8, 0))
 
-        lista_frame = tk.LabelFrame(f, text="Empresas cadastradas", padx=8, pady=8)
+        self.lista_frame = tk.LabelFrame(f, text="Empresas cadastradas", padx=8, pady=8)
+        lista_frame = self.lista_frame
         lista_frame.pack(fill="both", expand=True, padx=16, pady=8)
 
-        self.tree = ttk.Treeview(lista_frame, columns=("nome", "cnpj", "status"), show="headings", height=8)
+        self.tree = ttk.Treeview(lista_frame, columns=("nome", "cnpj", "grupo", "status"), show="headings", height=7)
         self.tree.heading("nome", text="Empresa")
         self.tree.heading("cnpj", text="CNPJ")
+        self.tree.heading("grupo", text="Grupo")
         self.tree.heading("status", text="Certificado")
-        self.tree.column("nome", width=260)
-        self.tree.column("cnpj", width=140)
-        self.tree.column("status", width=100)
+        self.tree.column("nome", width=210)
+        self.tree.column("cnpj", width=130)
+        self.tree.column("grupo", width=80)
+        self.tree.column("status", width=90)
         self.tree.pack(side="left", fill="both", expand=True)
 
         botoes_lista = tk.Frame(lista_frame)
@@ -301,14 +349,43 @@ class Assistente(tk.Tk):
         self.btn_adicionar.config(state="normal" if ok else "disabled")
         return ok
 
+    def _grupos_existentes(self) -> list[str]:
+        vistos = []
+        for emp in self.empresas:
+            g = emp.get("grupo", GRUPO_PADRAO)
+            if g not in vistos:
+                vistos.append(g)
+        return vistos
+
     def acao_adicionar(self):
         nome = self.var_nome.get().strip()
         cnpj = limpar_cnpj(self.var_cnpj.get())
+        grupo = self.var_grupo.get().strip() or GRUPO_PADRAO
         if not nome or not cnpj:
             messagebox.showwarning("Faltam dados", "Preencha o nome e o CNPJ da empresa.")
             return
         if not getattr(self, "var_status_ok", False):
             messagebox.showwarning("Certificado não validado", "Clique em \"Validar certificado\" antes de adicionar.")
+            return
+
+        empresas_sem_esta = [e for i, e in enumerate(self.empresas) if i != self.editando_index]
+        if len(empresas_sem_esta) >= LIMITE_EMPRESAS:
+            self._mostrar_limite_atingido()
+            return
+
+        grupos_existentes = {e.get("grupo", GRUPO_PADRAO) for e in empresas_sem_esta}
+        if grupo not in grupos_existentes and len(grupos_existentes) >= LIMITE_GRUPOS:
+            messagebox.showwarning("Limite de grupos",
+                                    f"Este programa aceita no máximo {LIMITE_GRUPOS} grupos. "
+                                    f"Grupos já usados: {', '.join(sorted(grupos_existentes))}.")
+            return
+
+        no_grupo = sum(1 for e in empresas_sem_esta if e.get("grupo", GRUPO_PADRAO) == grupo)
+        if no_grupo >= LIMITE_POR_GRUPO:
+            messagebox.showwarning("Limite do grupo",
+                                    f"O grupo \"{grupo}\" já tem {no_grupo} empresas (máximo {LIMITE_POR_GRUPO}). "
+                                    "Escolha outro grupo (ou crie um novo, se ainda não atingiu o limite de "
+                                    f"{LIMITE_GRUPOS} grupos).")
             return
 
         pasta_certs = Path(self.pasta_saida.get()) / "Certificados"
@@ -319,6 +396,7 @@ class Assistente(tk.Tk):
         registro = {
             "nome": nome,
             "cnpj": cnpj,
+            "grupo": grupo,
             "certificado": str(destino).replace("\\", "/"),
             "senha": seguranca.proteger(self.var_senha.get()),
             "usar_cnpj_consulta": False,
@@ -341,6 +419,7 @@ class Assistente(tk.Tk):
         emp = self.empresas[idx]
         self.var_nome.set(emp["nome"])
         self.var_cnpj.set(emp["cnpj"])
+        self.var_grupo.set(emp.get("grupo", GRUPO_PADRAO))
         self.var_cert_caminho = emp["certificado"]
         self.var_cert_label.set(Path(emp["certificado"]).name)
         self.var_senha.set(seguranca.revelar(emp["senha"]))
@@ -372,8 +451,13 @@ class Assistente(tk.Tk):
     def _atualizar_lista(self):
         self.tree.delete(*self.tree.get_children())
         for emp in self.empresas:
-            self.tree.insert("", "end", values=(emp["nome"], emp["cnpj"], "✓ Válido"))
+            self.tree.insert("", "end", values=(emp["nome"], emp["cnpj"], emp.get("grupo", GRUPO_PADRAO), "✓ Válido"))
         self.btn_concluir.config(state="normal" if self.empresas else "disabled")
+        self.lista_frame.config(text=f"Empresas cadastradas ({len(self.empresas)}/{LIMITE_EMPRESAS})")
+        grupos = self._grupos_existentes()
+        self.combo_grupo.config(values=grupos)
+        if not self.var_grupo.get():
+            self.var_grupo.set(grupos[0] if grupos else GRUPO_PADRAO)
 
     # ---------------------------------------------------------- Tela 3
     def mostrar_tela_periodo(self):
@@ -428,103 +512,153 @@ class Assistente(tk.Tk):
     def mostrar_tela_frequencia(self):
         self.limpar_container()
         f = self.container
-        tk.Label(f, text="Com que frequência rodar?", font=("Segoe UI", 13, "bold")).pack(pady=(20, 4))
-        tk.Label(f, text="Escolha até 2 frequências. O programa roda automaticamente,\n"
-                          "sem precisar abrir esta tela de novo.",
-                 justify="center").pack(pady=(0, 12))
+        tk.Label(f, text="Com que frequência cada grupo roda?", font=("Segoe UI", 13, "bold")).pack(pady=(14, 4))
+        tk.Label(f, text="Cada grupo tem sua própria agenda — até 2 frequências ativas por grupo.",
+                 justify="center").pack(pady=(0, 8))
 
-        self.vars_freq = {}
-        self.vars_freq_detalhe = {}
+        grupos = self._grupos_existentes()
+        notebook = ttk.Notebook(f)
+        notebook.pack(fill="both", expand=True, padx=16, pady=4)
+
+        self.vars_freq_por_grupo = {}
+        self.vars_freq_detalhe_por_grupo = {}
+
+        for grupo in grupos:
+            aba = tk.Frame(notebook)
+            notebook.add(aba, text=grupo)
+            self._montar_aba_frequencia(aba, grupo)
+
+        tk.Label(f, text="Dica: prefira horários fora do expediente comercial (fim de tarde, noite ou\n"
+                          "manhã cedo) — a API do governo costuma ficar mais instável durante o dia.",
+                 fg="#777", font=("Segoe UI", 8), justify="center").pack(pady=(6, 0))
+
+        rodape = tk.Frame(f)
+        rodape.pack(pady=14)
+        tk.Button(rodape, text="←  Voltar", command=self.mostrar_tela_periodo).pack(side="left", padx=(0, 8))
+        tk.Button(rodape, text="Concluir  →", font=("Segoe UI", 10, "bold"),
+                  command=self.acao_finalizar).pack(side="left")
+
+    def _montar_aba_frequencia(self, aba, grupo):
+        agendamento = self.agendamentos_por_grupo.get(grupo, AGENDAMENTO_PADRAO)
+        vars_freq = {}
+        vars_detalhe = {}
 
         def bloco(chave, titulo, tem_dia_mes):
-            cfg = self.agendamento.get(chave, {})
-            grp = tk.LabelFrame(f, text=titulo, padx=12, pady=8)
-            grp.pack(fill="x", padx=30, pady=6)
+            cfg = agendamento.get(chave, {})
+            grp = tk.LabelFrame(aba, text=titulo, padx=12, pady=8)
+            grp.pack(fill="x", padx=14, pady=6)
 
             var_ativo = tk.BooleanVar(value=cfg.get("ativo", False))
-            self.vars_freq[chave] = var_ativo
+            vars_freq[chave] = var_ativo
             tk.Checkbutton(grp, text="Ativar", variable=var_ativo,
-                           command=lambda: self._limitar_frequencias(chave)).grid(row=0, column=0, sticky="w")
+                           command=lambda: self._limitar_frequencias(grupo, chave)).grid(row=0, column=0, sticky="w")
 
             if tem_dia_mes:
-                tk.Label(grp, text="Dia do mês:").grid(row=0, column=1, sticky="e", padx=(20, 4))
+                tk.Label(grp, text="Dia do mês:").grid(row=0, column=1, sticky="e", padx=(16, 4))
                 var_dia = tk.StringVar(value=str(cfg.get("dia_mes", 1)))
                 ttk.Combobox(grp, textvariable=var_dia, values=[str(d) for d in range(1, 29)],
                             width=4, state="readonly").grid(row=0, column=2)
                 detalhe = {"dia_mes": var_dia}
             else:
-                tk.Label(grp, text="Dia da semana:").grid(row=0, column=1, sticky="e", padx=(20, 4))
+                tk.Label(grp, text="Dia da semana:").grid(row=0, column=1, sticky="e", padx=(16, 4))
                 var_dia = tk.StringVar(value=DIAS_SEMANA[cfg.get("dia_semana", 2)])
                 ttk.Combobox(grp, textvariable=var_dia, values=DIAS_SEMANA,
                             width=13, state="readonly").grid(row=0, column=2)
                 detalhe = {"dia_semana": var_dia}
 
-            tk.Label(grp, text="Horário:").grid(row=0, column=3, sticky="e", padx=(20, 4))
+            tk.Label(grp, text="Horário:").grid(row=0, column=3, sticky="e", padx=(16, 4))
             var_hora = tk.StringVar(value=cfg.get("hora", "09:00"))
             ttk.Combobox(grp, textvariable=var_hora, values=HORAS, width=6, state="readonly").grid(row=0, column=4)
             detalhe["hora"] = var_hora
-            self.vars_freq_detalhe[chave] = detalhe
+            vars_detalhe[chave] = detalhe
 
         bloco("mensal", "Mensal — fecha o mês anterior completo", tem_dia_mes=True)
         bloco("semanal", "Semanal — toda semana, mês atual", tem_dia_mes=False)
         bloco("quinzenal", "Quinzenal — a cada 14 dias, mês atual", tem_dia_mes=False)
 
-        rodape = tk.Frame(f)
-        rodape.pack(pady=24)
-        tk.Button(rodape, text="←  Voltar", command=self.mostrar_tela_periodo).pack(side="left", padx=(0, 8))
-        tk.Button(rodape, text="Concluir  →", font=("Segoe UI", 10, "bold"),
-                  command=self.acao_finalizar).pack(side="left")
+        n_empresas = sum(1 for e in self.empresas if e.get("grupo", GRUPO_PADRAO) == grupo)
+        tk.Label(aba, text=f"{n_empresas} empresa(s) neste grupo.",
+                 fg="#777", font=("Segoe UI", 8)).pack(pady=(4, 0))
 
-    def _limitar_frequencias(self, chave_alterada):
-        ativas = [k for k, v in self.vars_freq.items() if v.get()]
+        self.vars_freq_por_grupo[grupo] = vars_freq
+        self.vars_freq_detalhe_por_grupo[grupo] = vars_detalhe
+
+    def _limitar_frequencias(self, grupo, chave_alterada):
+        vars_freq = self.vars_freq_por_grupo[grupo]
+        ativas = [k for k, v in vars_freq.items() if v.get()]
         if len(ativas) > 2:
-            self.vars_freq[chave_alterada].set(False)
-            messagebox.showwarning("Limite de frequências", "Escolha no máximo 2 frequências ativas.")
+            vars_freq[chave_alterada].set(False)
+            messagebox.showwarning("Limite de frequências", "Escolha no máximo 2 frequências ativas por grupo.")
 
     def acao_finalizar(self):
-        if not any(v.get() for v in self.vars_freq.values()):
-            messagebox.showwarning("Nenhuma frequência ativa", "Ative pelo menos 1 frequência antes de concluir.")
-            return
+        agendamentos_por_grupo = {}
+        for grupo, vars_freq in self.vars_freq_por_grupo.items():
+            if not any(v.get() for v in vars_freq.values()):
+                messagebox.showwarning("Nenhuma frequência ativa",
+                                        f'Ative pelo menos 1 frequência para o grupo "{grupo}" antes de concluir.')
+                return
+            agendamento = {}
+            for chave, var_ativo in vars_freq.items():
+                detalhe = self.vars_freq_detalhe_por_grupo[grupo][chave]
+                item = {"ativo": var_ativo.get(), "hora": detalhe["hora"].get()}
+                if "dia_mes" in detalhe:
+                    item["dia_mes"] = int(detalhe["dia_mes"].get())
+                else:
+                    item["dia_semana"] = DIAS_SEMANA.index(detalhe["dia_semana"].get())
+                agendamento[chave] = item
+            agendamentos_por_grupo[grupo] = agendamento
+        self.agendamentos_por_grupo = agendamentos_por_grupo
 
-        agendamento = {}
-        for chave, var_ativo in self.vars_freq.items():
-            detalhe = self.vars_freq_detalhe[chave]
-            item = {"ativo": var_ativo.get(), "hora": detalhe["hora"].get()}
-            if "dia_mes" in detalhe:
-                item["dia_mes"] = int(detalhe["dia_mes"].get())
-            else:
-                item["dia_semana"] = DIAS_SEMANA.index(detalhe["dia_semana"].get())
-            agendamento[chave] = item
-        self.agendamento = agendamento
+        grupos_config = []
+        for grupo in self._grupos_existentes():
+            empresas_do_grupo = []
+            for e in self.empresas:
+                if e.get("grupo", GRUPO_PADRAO) == grupo:
+                    e2 = dict(e)
+                    e2.pop("grupo", None)
+                    empresas_do_grupo.append(e2)
+            grupos_config.append({
+                "nome": grupo,
+                "agendamento": agendamentos_por_grupo[grupo],
+                "empresas": empresas_do_grupo,
+            })
 
         config = {
             "ambiente": "producao",
             "pasta_saida": self.pasta_saida.get().replace("\\", "/"),
             "avisar_cert_vencido": self.avisar_cert_vencido,
             "periodo_inicial": self.periodo_inicial,
-            "agendamento": self.agendamento,
-            "empresas": self.empresas,
+            "grupos": grupos_config,
         }
         ARQ_CONFIG.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
 
         self.config(cursor="watch")
         self.update()
-        erros = registrar_tarefas_agendador(self.agendamento)
+        erros = registrar_tarefas_agendador(self.agendamentos_por_grupo)
+        subprocess.Popen(despacho.comando_base() + ["backfill"], cwd=str(PASTA))
         self.config(cursor="")
 
-        resumo_freq = ", ".join(k for k, v in self.agendamento.items() if v["ativo"])
+        total_empresas = len(self.empresas)
+        resumo_grupos = ", ".join(
+            f'{g} ({sum(1 for e in self.empresas if e.get("grupo", GRUPO_PADRAO) == g)})'
+            for g in self._grupos_existentes())
+        resumo_periodo = ("todo o histórico" if self.periodo_inicial.get("tipo") == "completo"
+                          else f"a partir de {self.periodo_inicial.get('desde')}")
         if erros:
             messagebox.showwarning("Configuração concluída (com avisos)",
-                                    f"{len(self.empresas)} empresa(s) cadastrada(s). config.json gravado.\n\n"
+                                    f"{total_empresas} empresa(s) em {len(grupos_config)} grupo(s): {resumo_grupos}.\n"
+                                    "config.json gravado.\n\n"
                                     "Não consegui registrar automaticamente no Agendador do Windows:\n"
                                     + "\n".join(f"  •  {e}" for e in erros))
         else:
             messagebox.showinfo("Configuração concluída",
-                                 f"{len(self.empresas)} empresa(s) cadastrada(s).\n"
-                                 f"Frequência ativa: {resumo_freq}.\n\n"
-                                 "config.json gravado e tarefa(s) registradas no Agendador\n"
-                                 "do Windows automaticamente. Não precisa fazer mais nada —\n"
-                                 "o programa vai rodar sozinho, nos dias/horários escolhidos.")
+                                 f"{total_empresas} empresa(s) em {len(grupos_config)} grupo(s): {resumo_grupos}.\n\n"
+                                 "config.json gravado e as tarefas foram registradas no Agendador\n"
+                                 "do Windows automaticamente — cada grupo com sua própria agenda.\n"
+                                 "Não precisa fazer mais nada.\n\n"
+                                 f"A busca do histórico inicial ({resumo_periodo}) já começou, "
+                                 "rodando em segundo plano — pode levar bastante tempo dependendo do "
+                                 "volume de notas. Um aviso do Windows avisa quando terminar.")
 
 
 def _despachar(subcomando: str) -> None:
@@ -532,10 +666,15 @@ def _despachar(subcomando: str) -> None:
     MESMO processo — é o que permite empacotar tudo num .exe único: em vez
     de abrir um novo processo Python apontando pra um arquivo .py solto
     (que não existiria dentro do .exe), a gente só troca o sys.argv e
-    chama a função diretamente."""
+    chama a função diretamente.
+
+    IMPORTANTE: repassa o código de retorno de main() para sys.exit() —
+    sem isso, o processo sempre "parece" ter dado certo pra quem chamou
+    (ex.: rotina.py), mesmo quando main() sinalizou falha (return 1)."""
     sys.argv = [sys.argv[0]] + sys.argv[2:]
     modulo = __import__(subcomando)
-    modulo.main()
+    codigo = modulo.main()
+    sys.exit(codigo if codigo is not None else 0)
 
 
 if __name__ == "__main__":

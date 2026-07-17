@@ -35,3 +35,10 @@ def comando_base(silencioso: bool = False) -> list[str]:
     if silencioso:
         executavel = executavel.replace("python.exe", "pythonw.exe")
     return [executavel, str(PASTA / "assistente.py")]
+
+
+def empresas_de(config: dict) -> list[dict]:
+    """Achata a lista de empresas de todos os grupos do config.json — os
+    scripts que baixam/geram relatório não precisam saber de grupo, só de
+    qual empresa processar."""
+    return [e for grupo in config.get("grupos", []) for e in grupo.get("empresas", [])]
