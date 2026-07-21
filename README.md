@@ -2,7 +2,7 @@
 
 Baixa automaticamente as **notas fiscais de serviço (NFS-e)** da sua empresa
 direto do **Portal Nacional** (Sistema Nacional NFS-e), gera relatórios em
-Excel e PDF, e roda sozinho, no dia e horário que você escolher — sem
+Excel e PDF, e roda sozinho, no dia e horário que você escolher e sem
 precisar saber programar.
 
 ## O que o programa faz
@@ -12,6 +12,7 @@ precisar saber programar.
   (Excel — ISS, INSS, IRRF, CSLL, PIS/COFINS) e um **Relatório em PDF**.
 - Roda automaticamente: mensal (fecha o mês anterior), semanal e/ou
   quinzenal — você escolhe.
+- Opção de rodar data específica que você selecionar.
 - Guarda a senha do certificado **criptografada**, presa à sua conta do
   Windows.
 - Avisa quando um certificado está prestes a vencer.
@@ -22,7 +23,8 @@ precisar saber programar.
 2. Salve numa pasta fixa do seu computador (ex.: `Documentos\NFSe-Automatico`)
    — não rode direto da pasta de Downloads, para não se perder se organizar
    os arquivos depois.
-3. Dê dois cliques no arquivo. Pronto, o assistente abre.
+   — Lembre-se de não modificar a pasta ou excluí-la.
+4. Dê dois cliques no arquivo. Pronto, o assistente abre.
 
 O Windows pode mostrar um aviso do SmartScreen ("Windows protegeu seu PC"),
 porque o programa é novo e ainda não tem muitos downloads — é normal para
@@ -46,11 +48,11 @@ relatórios.
 certificado (botão "Escolher...") e a senha. Clique em **Validar
 certificado** antes de adicionar — o programa confere localmente (sem
 precisar de internet) se a senha está certa e mostra até quando o
-certificado vale. Pode cadastrar quantas empresas quiser, e editar ou
+certificado vale. Pode cadastrar até 20 empresas, e editar ou
 remover qualquer uma antes de continuar.
 
 **3. Período inicial** — escolha se quer buscar **todo o histórico** da
-empresa ou só **a partir de um mês específico**.
+empresa ou **um mês específico**.
 
 **4. Frequência** — escolha até 2: **Mensal** (fecha o mês anterior
 completo), **Semanal** ou **Quinzenal** (mantêm o mês atual sempre
@@ -69,8 +71,7 @@ aviso, marque "Não mostrar este aviso novamente" quando ele aparecer.
 
 **Posso rodar o download manualmente, sem esperar o horário agendado?**
 Sim — abra o assistente de novo a qualquer momento para revisar o cadastro;
-para forçar uma busca imediata, veja `TECNICO.md` (uso por linha de
-comando).
+para forçar uma busca imediata.
 
 **Onde ficam as notas e relatórios?**
 Na pasta que você escolheu no Passo 1, organizados por empresa e por mês.
