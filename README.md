@@ -80,6 +80,30 @@ Na pasta que você escolheu no Passo 1, organizados por empresa e por mês.
 Não. Ele só lê as notas via API oficial do Portal Nacional, usando seu
 certificado para se autenticar — não emite, altera nem cancela nada.
 
+**Por que só posso cadastrar até 20 empresas?**
+Esse limite existe para não sobrecarregar a busca — rodar empresas demais
+ao mesmo tempo deixa o processo muito mais longo, mais sujeito à
+instabilidade do servidor do governo, e aumenta a chance de alguma etapa
+falhar por demorar demais. Se o seu escritório precisa de mais que isso,
+entre em contato (veja a seção **Contato** abaixo).
+
+**Ao abrir o programa (ou durante uma busca automática) aparece o erro
+"Failed to execute script 'pyi_rth_tkinter' ... Tcl data directory". O que
+é isso?**
+Na grande maioria dos casos é o **antivírus interferindo** na extração
+temporária que o `.exe` faz toda vez que roda (é assim que um executável de
+arquivo único funciona por dentro) — comum em programas novos, sem
+assinatura digital de editora paga. **Solução**: adicione a pasta onde está
+o `NFSe-Automatico.exe` como exceção no seu antivírus.
+
+No Windows Defender: *Configurações do Windows → Atualização e Segurança →
+Segurança do Windows → Proteção contra vírus e ameaças → Gerenciar
+configurações → Exclusões → Adicionar uma exclusão → Pasta* (escolha a
+pasta inteira onde está o `.exe`, não só o arquivo). Se usar outro
+antivírus, procure por "Exceções" ou "Exclusões" nas configurações dele —
+o caminho é sempre parecido. Depois de adicionar a exceção, feche os avisos
+de erro que já apareceram e abra o programa de novo.
+
 ## Para quem quer entender por dentro / contribuir
 
 Veja [`TECNICO.md`](TECNICO.md) — arquitetura, as APIs usadas, como rodar

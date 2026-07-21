@@ -42,6 +42,7 @@ LINKEDIN_URL = "https://www.linkedin.com/in/erika-duarte-tech/"
 LIMITE_EMPRESAS = 20
 LIMITE_GRUPOS = 3
 LIMITE_POR_GRUPO = 10
+LIMITE_RODAR_AGORA = 5
 GRUPO_PADRAO = "Grupo 1"
 GRUPOS_FIXOS = [f"Grupo {i}" for i in range(1, LIMITE_GRUPOS + 1)]
 
@@ -87,22 +88,39 @@ NOME_TAREFA_PREFIXO = "NFSe Automatico"
 
 
 def registrar_tarefas_agendador(agendamentos_por_grupo: dict) -> list[str]:
-    """Cria (ou remove, se desativada) 1 tarefa por grupo+frequência no
-    Agendador de Tarefas do Windows, via PowerShell Register-ScheduledTask —
-    tarefa diária, com StartWhenAvailable (recupera atraso se o PC estava
-    desligado). Retorna lista de mensagens de erro (vazia se tudo OK)."""
+    """Cria/atualiza 1 tarefa por grupo+frequência ATIVA no Agendador de
+    Tarefas do Windows, via PowerShell Register-ScheduledTask — tarefa
+    diária, com StartWhenAvailable (recupera atraso se o PC estava
+    desligado). Antes de criar, olha TODAS as tarefas "NFSe Automatico - *"
+    já existentes e remove as que não correspondem a nada configurado agora
+    (grupo removido, frequência desativada etc.) — evita tarefa órfã
+    duplicada/esquecida no Agendador. Retorna lista de mensagens de erro
+    (vazia se tudo OK)."""
     erros = []
+
+    desejadas = {
+        f"{NOME_TAREFA_PREFIXO} - {grupo} - {freq.capitalize()}"
+        for grupo, agendamento in agendamentos_por_grupo.items()
+        for freq, cfg in agendamento.items() if cfg.get("ativo")
+    }
+
+    r_existentes = subprocess.run(
+        ["powershell", "-NoProfile", "-Command",
+         f'(Get-ScheduledTask -TaskName "{NOME_TAREFA_PREFIXO} - *" -ErrorAction SilentlyContinue).TaskName'],
+        capture_output=True, text=True)
+    existentes = {linha.strip() for linha in r_existentes.stdout.splitlines() if linha.strip()}
+
+    for nome_orfao in existentes - desejadas:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f'Unregister-ScheduledTask -TaskName "{nome_orfao}" -Confirm:$false -ErrorAction SilentlyContinue'],
+            capture_output=True, text=True)
 
     for grupo, agendamento in agendamentos_por_grupo.items():
         for freq, cfg in agendamento.items():
-            nome_tarefa = f"{NOME_TAREFA_PREFIXO} - {grupo} - {freq.capitalize()}"
             if not cfg.get("ativo"):
-                subprocess.run(
-                    ["powershell", "-NoProfile", "-Command",
-                     f'Unregister-ScheduledTask -TaskName "{nome_tarefa}" -Confirm:$false -ErrorAction SilentlyContinue'],
-                    capture_output=True, text=True)
                 continue
-
+            nome_tarefa = f"{NOME_TAREFA_PREFIXO} - {grupo} - {freq.capitalize()}"
             comando = despacho.comando_base(silencioso=True) + ["rotina", "--grupo", grupo, "--modo", freq]
             argumentos = " ".join(f'"{a}"' if " " in a else a for a in comando[1:])
             script = (
@@ -294,7 +312,7 @@ class Assistente(tk.Tk):
         self.combo_grupo = ttk.Combobox(form, textvariable=self.var_grupo, width=22,
                                          values=GRUPOS_FIXOS, state="readonly")
         self.combo_grupo.grid(row=2, column=1, sticky="w", pady=(6, 0))
-        tk.Label(form, text="(até 3 grupos, 10 empresas cada)",
+        tk.Label(form, text=f"(até {LIMITE_GRUPOS} grupos, {LIMITE_POR_GRUPO} empresas cada)",
                  fg="#777", font=("Segoe UI", 8)).grid(row=2, column=2, sticky="w", padx=(8, 0), pady=(6, 0))
 
         tk.Label(form, text="Certificado (.pfx)").grid(row=3, column=0, sticky="w", pady=(6, 0))
@@ -339,11 +357,11 @@ class Assistente(tk.Tk):
         rodape = tk.Frame(f)
         rodape.pack(pady=12, fill="x", padx=16)
         tk.Button(rodape, text="←  Voltar", command=self.mostrar_tela_pasta).pack(side="left", padx=(0, 8))
-        self.btn_concluir = tk.Button(rodape, text="Avançar  →", font=("Segoe UI", 10, "bold"),
+        self.btn_concluir = tk.Button(rodape, text="Agendar rotina automática  →", font=("Segoe UI", 10, "bold"),
                                        state="disabled", command=self.mostrar_tela_periodo)
-        self.btn_concluir.pack(side="left")
-        tk.Button(rodape, text="Histórico de execuções...", command=self.acao_ver_historico).pack(side="right")
-        tk.Button(rodape, text="Rodar agora (mês específico)...", command=self.acao_rodar_agora).pack(side="right", padx=(0, 8))
+        self.btn_concluir.pack(side="left", padx=(0, 8))
+        tk.Button(rodape, text="Rodar agora (mês específico)...", command=self.acao_rodar_agora).pack(side="left", padx=(0, 8))
+        tk.Button(rodape, text="Histórico de execuções...", command=self.acao_ver_historico).pack(side="left")
 
         self._atualizar_lista()
 
@@ -501,7 +519,8 @@ class Assistente(tk.Tk):
 
     def acao_rodar_agora(self):
         """Abre o diálogo de retirada manual de um mês específico — roda por
-        fora do agendamento, não atrasa nem antecipa os fechamentos automáticos."""
+        fora do agendamento, não atrasa nem antecipa os fechamentos automáticos.
+        Aceita selecionar até LIMITE_RODAR_AGORA empresas de uma vez."""
         if not self.empresas:
             messagebox.showinfo("Rodar agora", "Cadastre pelo menos uma empresa primeiro.")
             return
@@ -516,21 +535,38 @@ class Assistente(tk.Tk):
         tk.Label(janela, justify="center", fg="#777", text=
                  "Roda por fora do agendamento — não atrasa nem antecipa\n"
                  "as retiradas automáticas. Útil pra pegar uma nota atrasada\n"
-                 "de um mês que já foi fechado."
-                 ).pack(padx=20, pady=(0, 14))
+                 f"de um mês que já foi fechado. Selecione até {LIMITE_RODAR_AGORA} empresas."
+                 ).pack(padx=20, pady=(0, 10))
 
-        form = tk.Frame(janela)
-        form.pack(padx=20)
+        tk.Label(janela, text="Empresas:").pack(anchor="w", padx=20)
+        borda = tk.Frame(janela, relief="groove", borderwidth=1)
+        borda.pack(padx=20, pady=(2, 12), fill="both")
+        canvas = tk.Canvas(borda, height=150, width=300, highlightthickness=0)
+        scroll = ttk.Scrollbar(borda, orient="vertical", command=canvas.yview)
+        frame_checks = tk.Frame(canvas)
+        frame_checks.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=frame_checks, anchor="nw")
+        canvas.configure(yscrollcommand=scroll.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="left", fill="y")
 
-        tk.Label(form, text="Empresa:").grid(row=0, column=0, sticky="w", pady=4)
-        nomes = [e["nome"] for e in self.empresas]
-        var_empresa = tk.StringVar(value=nomes[0])
-        ttk.Combobox(form, textvariable=var_empresa, values=nomes, state="readonly", width=30).grid(
-            row=0, column=1, sticky="w", pady=4)
+        vars_empresas: dict[str, tk.BooleanVar] = {}
 
-        tk.Label(form, text="Mês:").grid(row=1, column=0, sticky="w", pady=4)
-        linha_data = tk.Frame(form)
-        linha_data.grid(row=1, column=1, sticky="w", pady=4)
+        def alternar(nome_alterado):
+            marcadas = [n for n, v in vars_empresas.items() if v.get()]
+            if len(marcadas) > LIMITE_RODAR_AGORA:
+                vars_empresas[nome_alterado].set(False)
+                messagebox.showwarning("Limite", f"Selecione no máximo {LIMITE_RODAR_AGORA} empresas por vez.")
+
+        for e in self.empresas:
+            var = tk.BooleanVar(value=False)
+            vars_empresas[e["nome"]] = var
+            tk.Checkbutton(frame_checks, text=e["nome"], variable=var,
+                           command=lambda n=e["nome"]: alternar(n)).pack(anchor="w")
+
+        tk.Label(janela, text="Mês:").pack(anchor="w", padx=20)
+        linha_data = tk.Frame(janela)
+        linha_data.pack(anchor="w", padx=20, pady=(0, 4))
         hoje = date.today()
         var_mes = tk.StringVar(value=f"{hoje.month:02d}")
         var_ano = tk.StringVar(value=str(hoje.year))
@@ -540,13 +576,17 @@ class Assistente(tk.Tk):
             side="left", padx=(4, 0))
 
         def executar():
-            empresa = var_empresa.get()
+            selecionadas = [nome for nome, v in vars_empresas.items() if v.get()]
+            if not selecionadas:
+                messagebox.showwarning("Rodar agora", "Selecione pelo menos uma empresa.")
+                return
             competencia = f"{var_ano.get()}-{var_mes.get()}"
             janela.destroy()
-            subprocess.Popen(despacho.comando_base() + ["executar_agora", "--empresa", empresa,
+            subprocess.Popen(despacho.comando_base() + ["executar_agora", "--empresas", ",".join(selecionadas),
                                                           "--competencia", competencia], cwd=str(PASTA))
             messagebox.showinfo("Rodando em segundo plano",
-                                 f"Buscando notas de \"{empresa}\" — competência {competencia}.\n\n"
+                                 f"Buscando notas de {len(selecionadas)} empresa(s) — competência {competencia}:\n"
+                                 f"{', '.join(selecionadas)}\n\n"
                                  "Isso roda em segundo plano e não trava a tela; um aviso do Windows\n"
                                  "avisa quando terminar.")
 
@@ -680,6 +720,7 @@ class Assistente(tk.Tk):
         self.combo_mes.pack(side="left", padx=(0, 6))
         self.combo_ano = ttk.Combobox(linha, textvariable=self.var_ano, values=anos, width=7, state="readonly")
         self.combo_ano.pack(side="left")
+        tk.Label(linha, text="até Hoje", fg="#999", font=("Segoe UI", 9, "italic")).pack(side="left", padx=(8, 0))
 
         rodape = tk.Frame(f)
         rodape.pack(pady=20)
@@ -731,6 +772,8 @@ class Assistente(tk.Tk):
         tk.Label(f, text="Dica: prefira horários fora do expediente comercial (fim de tarde, noite ou\n"
                           "manhã cedo) — a API do governo costuma ficar mais instável durante o dia.",
                  fg="#777", font=("Segoe UI", 8), justify="center").pack(pady=(6, 0))
+        tk.Label(f, text="Importante: o computador precisa estar ligado no horário agendado para a rotina rodar.",
+                 fg="#B8860B", font=("Segoe UI", 8, "bold"), justify="center").pack(pady=(2, 0))
 
         rodape = tk.Frame(f)
         rodape.pack(pady=14)

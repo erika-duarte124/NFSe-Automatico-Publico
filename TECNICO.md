@@ -46,7 +46,7 @@ python assistente.py gerar_relatorio_pdf --empresa "NOME" --competencia 2026-05
 python assistente.py rotina --grupo "Grupo A" --modo mensal   # ou semanal / quinzenal / auto
 python assistente.py rodar_fila 2026-05
 python assistente.py backfill                  # busca do histórico inicial (ver abaixo)
-python assistente.py executar_agora --empresa "NOME" --competencia 2026-05   # retirada manual (ver abaixo)
+python assistente.py executar_agora --empresas "NOME1,NOME2" --competencia 2026-05   # retirada manual (ver abaixo)
 ```
 
 `assistente.py` funciona como um **despachante** (`despacho.py`): o primeiro
@@ -124,6 +124,17 @@ Ver `config.exemplo.json`. Campos principais:
 `rotina_estado.json` e `ultima_execucao.json` também são organizados por grupo internamente
 (`{"grupos": {"Nome do Grupo": {...}}}`), já que cada grupo tem seu próprio ciclo de fechamento.
 
+## Registro das tarefas no Agendador (`registrar_tarefas_agendador`)
+
+Chamada toda vez que o cadastro é concluído ("Agendar rotina automática" na
+Tela 2). Antes de criar qualquer tarefa nova, consulta **todas** as tarefas
+`NFSe Automatico - *` já existentes no Agendador do Windows
+(`Get-ScheduledTask`) e remove as que não correspondem a nenhuma
+combinação grupo+frequência ativa na configuração atual — cobre os casos
+de um grupo ser esvaziado/removido ou uma frequência ser desativada, sem
+deixar tarefa órfã duplicada. Só depois disso registra (`-Force`, então
+atualiza se já existir) as tarefas que devem existir.
+
 ## Segurança de execução (`rotina.py`)
 
 - `rotina.py` roda **uma vez por grupo** (`--grupo "Nome do Grupo"`) — o
@@ -146,14 +157,16 @@ Ver `config.exemplo.json`. Campos principais:
 ## Retirada manual de um mês específico (`executar_agora.py`)
 
 Botão "Rodar agora (mês específico)..." na Tela 2 do assistente — abre um
-diálogo (empresa + mês/ano) e dispara em segundo plano
-(`subprocess.Popen`, não trava a tela). Reaproveita o mesmo `pipeline()` de
-`rotina.py` (mesmo timeout de segurança e short-circuit), mas **não lê nem
+diálogo (empresas via checkbox, até `LIMITE_RODAR_AGORA` = 5 de uma vez,
++ mês/ano) e dispara em segundo plano (`subprocess.Popen`, não trava a
+tela). Reaproveita o mesmo `pipeline()` de `rotina.py` (mesmo timeout de
+segurança e short-circuit), uma empresa de cada vez, mas **não lê nem
 grava `rotina_estado.json`/`ultima_execucao.json`** — roda inteiramente por
 fora do ciclo do agendamento, então não atrasa nem antecipa nenhum
 fechamento automático. Registra no mesmo `rotina.log`, com o cabeçalho
 "RETIRADA MANUAL" pra diferenciar das execuções agendadas. Notifica o
-Windows ao final, igual `rotina.py`.
+Windows ao final com o resumo (quantas OK, quantas com falha), igual
+`rotina.py`.
 
 Útil pra pegar uma nota emitida com atraso num mês já fechado — o
 NSU-checkpoint por competência (`estado_nsu_competencia.json`) garante que
