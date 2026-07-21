@@ -39,6 +39,7 @@ CINZA = colors.HexColor("#777777")
 PRETO = colors.black
 VERMELHO = colors.HexColor("#C00000")
 LINHA = colors.HexColor("#BBBBBB")
+AMARELO_RETRO = colors.HexColor("#FFF2CC")   # linha inteira: nota retroativa (mesma cor do Relatório Simples)
 
 
 # ------------------------------------------------------------------- parsing
@@ -235,6 +236,11 @@ def gerar_pdf(registros: list, tipo: str, empresa: dict, competencia: str,
                   f"fiscal(is) | Gerado em {datetime.now():%d/%m/%Y às %H:%M:%S}", EST_INFO),
         Spacer(1, 4 * mm),
     ]
+    if any(r.get("retroativa") for r in registros):
+        historia.append(Paragraph(
+            "<font color='#B8860B'>■</font> Linha em amarelo: nota emitida neste mês, "
+            "com competência de mês anterior (retroativa)", EST_INFO))
+        historia.append(Spacer(1, 2 * mm))
 
     parte = "PRESTADOR" if tipo == "Recebidas" else "TOMADOR"
     cabecalho = [cab("TIPO", ""), cab("NOTA", "nNFSe"), cab("DATAS", "dCompet dhEmi"),
@@ -245,6 +251,7 @@ def gerar_pdf(registros: list, tipo: str, empresa: dict, competencia: str,
                  cab("COFINS", "vCofins"), cab("CP", "vRetCP"), cab("IRRF", "vRetIRRF"),
                  cab("CSLL", "vRetCSLL")]
     dados = [cabecalho] + [linha_nota(r, tipo) for r in registros]
+    linhas_retro = [i + 1 for i, r in enumerate(registros) if r.get("retroativa")]  # +1 por causa do cabeçalho
 
     # linha de TOTAL no rodapé da tabela (soma do valor dos serviços)
     total_valor = sum(r["vServ"] for r in registros)
@@ -271,7 +278,7 @@ def gerar_pdf(registros: list, tipo: str, empresa: dict, competencia: str,
         ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
         ("LEFTPADDING", (0, 0), (-1, -1), 2),
         ("RIGHTPADDING", (0, 0), (-1, -1), 2),
-    ]))
+    ] + [("BACKGROUND", (0, r), (-1, r), AMARELO_RETRO) for r in linhas_retro]))
     historia.append(tabela)
     historia.append(Spacer(1, 6 * mm))
 
@@ -344,16 +351,20 @@ def main() -> int:
 
         for tipo in ("Recebidas", "Emitidas"):
             pasta_tipo = pasta_mes / tipo
+            arquivos = sorted(pasta_tipo.glob("*.xml")) if pasta_tipo.exists() else []
+            if tipo == "Emitidas" and (pasta_tipo / "XML retroativo").exists():
+                # notas emitidas neste mês, mas com competência de mês anterior
+                arquivos += sorted((pasta_tipo / "XML retroativo").glob("*.xml"))
             registros, puladas = [], 0
-            if pasta_tipo.exists():
-                for arq in sorted(pasta_tipo.glob("*.xml")):
-                    reg = extrair_para_pdf(arq)
-                    if not reg:
-                        continue
-                    if reg["chave"] in excluidas or arq.stem in excluidas:
-                        puladas += 1
-                        continue
-                    registros.append(reg)
+            for arq in arquivos:
+                reg = extrair_para_pdf(arq)
+                if not reg:
+                    continue
+                if reg["chave"] in excluidas or arq.stem in excluidas:
+                    puladas += 1
+                    continue
+                reg["retroativa"] = bool(reg["dCompet"]) and reg["dCompet"][:7] != reg["dhEmi"][:7]
+                registros.append(reg)
             if puladas:
                 nfse.log(f"  {tipo}: {puladas} nota(s) cancelada(s)/substituída(s) fora do PDF.")
             if not registros:

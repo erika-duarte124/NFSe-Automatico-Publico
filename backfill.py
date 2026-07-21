@@ -12,7 +12,7 @@ tela do assistente.
 
 Tudo registrado em backfill.log. Notifica o Windows ao concluir.
 """
-
+import argparse
 import json
 import re
 import subprocess
@@ -81,8 +81,15 @@ def competencias_existentes(pasta_saida: str, empresa: str) -> list[str]:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--empresas", help="nomes separados por vírgula - restringe a busca a essas empresas")
+    args = parser.parse_args()
+
     config = json.loads(ARQ_CONFIG.read_text(encoding="utf-8"))
     empresas = [e["nome"] for grupo in config.get("grupos", []) for e in grupo.get("empresas", [])]
+    if args.empresas:
+        filtro = set(args.empresas.split(","))
+        empresas = [nome for nome in empresas if nome in filtro]
     pasta_saida = config.get("pasta_saida")
     periodo = config.get("periodo_inicial", {"tipo": "completo"})
 

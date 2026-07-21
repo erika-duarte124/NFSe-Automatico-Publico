@@ -46,6 +46,7 @@ python assistente.py gerar_relatorio_pdf --empresa "NOME" --competencia 2026-05
 python assistente.py rotina --grupo "Grupo A" --modo mensal   # ou semanal / quinzenal / auto
 python assistente.py rodar_fila 2026-05
 python assistente.py backfill                  # busca do histórico inicial (ver abaixo)
+python assistente.py executar_agora --empresa "NOME" --competencia 2026-05   # retirada manual (ver abaixo)
 ```
 
 `assistente.py` funciona como um **despachante** (`despacho.py`): o primeiro
@@ -61,6 +62,7 @@ pyinstaller --onefile --windowed --noupx --name NFSe-Automatico ^
   --hidden-import baixar_nfse --hidden-import gerar_relatorio ^
   --hidden-import gerar_relatorio_pdf --hidden-import gerar_retencoes ^
   --hidden-import rotina --hidden-import rodar_fila --hidden-import backfill ^
+  --hidden-import executar_agora ^
   assistente.py
 ```
 
@@ -138,8 +140,33 @@ Ver `config.exemplo.json`. Campos principais:
 - **Notificação do Windows** (`win11toast`) ao final de cada execução, com
   o resumo (quantas empresas OK, quantas com falha).
 - **`ultima_execucao.json`**: resultado estruturado da última execução —
-  `{rotulo, competencia, data, empresas_ok, empresas_com_falha}`. Base para
-  uma futura tela de histórico/reprocessamento.
+  `{rotulo, competencia, data, empresas_ok, empresas_com_falha}`. É o que
+  alimenta a tela "Histórico de execuções..." do assistente (ver abaixo).
+
+## Retirada manual de um mês específico (`executar_agora.py`)
+
+Botão "Rodar agora (mês específico)..." na Tela 2 do assistente — abre um
+diálogo (empresa + mês/ano) e dispara em segundo plano
+(`subprocess.Popen`, não trava a tela). Reaproveita o mesmo `pipeline()` de
+`rotina.py` (mesmo timeout de segurança e short-circuit), mas **não lê nem
+grava `rotina_estado.json`/`ultima_execucao.json`** — roda inteiramente por
+fora do ciclo do agendamento, então não atrasa nem antecipa nenhum
+fechamento automático. Registra no mesmo `rotina.log`, com o cabeçalho
+"RETIRADA MANUAL" pra diferenciar das execuções agendadas. Notifica o
+Windows ao final, igual `rotina.py`.
+
+Útil pra pegar uma nota emitida com atraso num mês já fechado — o
+NSU-checkpoint por competência (`estado_nsu_competencia.json`) garante que
+rodar de novo um mês já processado não duplica nada: só baixa o que for
+realmente novo.
+
+## Histórico de execuções (tela "Histórico de execuções...")
+
+Botão na Tela 2, ao lado do "Rodar agora...". Lê `ultima_execucao.json` e
+mostra numa tabela: grupo, tipo de execução, competência, data, empresa e
+status (OK/FALHOU, com a falha destacada em vermelho claro). Tem botão
+"Exportar para Excel..." (`openpyxl`) que gera a mesma tabela num `.xlsx`,
+com a mesma marcação visual das falhas.
 
 ## Busca do histórico inicial (`backfill.py`)
 
