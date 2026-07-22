@@ -139,9 +139,11 @@ atualiza se já existir) as tarefas que devem existir.
 
 - `rotina.py` roda **uma vez por grupo** (`--grupo "Nome do Grupo"`) — o
   Agendador do Windows tem uma tarefa por grupo, cada uma chamando com seu
-  próprio `--grupo`. Estado (`rotina_estado.json`), resultado
-  (`ultima_execucao.json`) e log ficam isolados por grupo, então um grupo
-  travando ou atrasando não afeta o ciclo dos outros.
+  próprio `--grupo`. Estado (`rotina_estado.json`) fica isolado por grupo
+  (chave própria dentro do JSON), então um grupo travando ou atrasando não
+  afeta o *estado* dos outros — mas a **execução em si** (download +
+  relatórios) é sempre serializada pra máquina inteira, nunca simultânea
+  entre grupos (ver "Lock global de execução" abaixo).
 - **Timeout por passo** (`TIMEOUT_PASSO_SEGUNDOS`, 30 min): se um passo travar
   (rede lenta, senha em branco esperando input que nunca vem etc.), é
   cancelado e registrado como falha — não trava a fila inteira.
@@ -150,9 +152,40 @@ atualiza se já existir) as tarefas que devem existir.
   Isso limita o pior caso por empresa a 1 timeout, não 5.
 - **Notificação do Windows** (`win11toast`) ao final de cada execução, com
   o resumo (quantas empresas OK, quantas com falha).
-- **`ultima_execucao.json`**: resultado estruturado da última execução —
-  `{rotulo, competencia, data, empresas_ok, empresas_com_falha}`. É o que
-  alimenta a tela "Histórico de execuções..." do assistente (ver abaixo).
+- **`ultima_execucao.json`**: histórico **cumulativo** de execuções — chave
+  `"execucoes"` com uma lista, uma entrada por execução (agendada ou
+  manual): `{grupo, rotulo, competencia, data, hora, empresas_ok,
+  empresas_com_falha}`. Cada execução nova é *anexada* à lista (nunca
+  sobrescreve as anteriores), limitada às últimas `LIMITE_HISTORICO` (500)
+  entradas — as mais antigas são descartadas quando o limite é excedido. É
+  o que alimenta a tela "Histórico de execuções..." do assistente (ver
+  abaixo).
+- **Gravação protegida por mutex** (`_com_mutex_estado`, `win32event`):
+  como cada grupo/frequência roda num processo independente, dois podem
+  gravar `rotina_estado.json`/`ultima_execucao.json` ao mesmo tempo (ex.:
+  Mensal de um grupo e Semanal de outro, ou dois grupos com o mesmo
+  horário). Sem proteção, o segundo a terminar podia sobrescrever o arquivo
+  inteiro com uma cópia lida antes da gravação do primeiro, perdendo a
+  atualização dele. A gravação agora sempre relê o arquivo na hora, dentro
+  de um mutex nomeado do Windows (`Global\NFSeAutomatico_EstadoLock`), e só
+  altera a chave do próprio grupo (`rotina_estado.json`) ou só *anexa* à
+  lista (`ultima_execucao.json`) — nenhuma atualização se perde, mesmo com
+  duas execuções genuinamente simultâneas. Testado com dois processos reais
+  gravando ao mesmo tempo.
+- **Lock global de execução** (`com_lock_execucao_global`, `win32event`,
+  mutex `Global\NFSeAutomatico_PipelineLock`): garante que **só uma
+  retirada roda por vez neste PC** — mensal, semanal ou quinzenal, de
+  qualquer grupo, e também a retirada manual (`executar_agora.py`). Se uma
+  segunda tentar começar enquanto outra está rodando, ela **espera**
+  terminar em vez de rodar em paralelo ou ser pulada (só atrasa alguns
+  minutos, nunca perde a execução do dia). Existe porque, na prática, pedir
+  notas simultaneamente ao Portal Nacional a partir da mesma máquina já
+  travou a resposta antes — mesmo entre empresas/grupos diferentes — então
+  o app nunca faz duas chamadas ao Portal ao mesmo tempo, por decisão de
+  design (não é uma limitação conhecida da API, é uma precaução). Testado
+  com dois grupos disparados como processos genuinamente concorrentes: o
+  segundo só começa exatamente quando o primeiro termina, sem sobreposição
+  no log nem nas empresas processadas.
 
 ## Retirada manual de um mês específico (`executar_agora.py`)
 
@@ -163,9 +196,11 @@ tela). Reaproveita o mesmo `pipeline()` de `rotina.py` (mesmo timeout de
 segurança e short-circuit), uma empresa de cada vez, mas **não lê nem
 grava `rotina_estado.json`/`ultima_execucao.json`** — roda inteiramente por
 fora do ciclo do agendamento, então não atrasa nem antecipa nenhum
-fechamento automático. Registra no mesmo `rotina.log`, com o cabeçalho
-"RETIRADA MANUAL" pra diferenciar das execuções agendadas. Notifica o
-Windows ao final com o resumo (quantas OK, quantas com falha), igual
+fechamento automático. Passa pelo mesmo lock global de execução (ver acima)
+— se uma retirada agendada já estiver rodando, espera terminar antes de
+começar. Registra no mesmo `rotina.log`, com o cabeçalho "RETIRADA MANUAL"
+pra diferenciar das execuções agendadas. Notifica o Windows ao final com o
+resumo (quantas OK, quantas com falha), igual
 `rotina.py`.
 
 Útil pra pegar uma nota emitida com atraso num mês já fechado — o
@@ -175,11 +210,13 @@ realmente novo.
 
 ## Histórico de execuções (tela "Histórico de execuções...")
 
-Botão na Tela 2, ao lado do "Rodar agora...". Lê `ultima_execucao.json` e
-mostra numa tabela: grupo, tipo de execução, competência, data, empresa e
-status (OK/FALHOU, com a falha destacada em vermelho claro). Tem botão
-"Exportar para Excel..." (`openpyxl`) que gera a mesma tabela num `.xlsx`,
-com a mesma marcação visual das falhas.
+Botão na Tela 2, ao lado do "Rodar agora...". Lê a lista `execucoes` de
+`ultima_execucao.json` (histórico cumulativo — nunca sobrescreve, ver
+"Lock global de execução" acima) e mostra numa tabela, **mais recente
+primeiro**: data, hora, grupo, tipo de execução, competência, empresa e
+status (OK/FALHOU, com a falha destacada em vermelho claro) — uma linha por
+empresa por execução. Tem botão "Exportar para Excel..." (`openpyxl`) que
+gera a mesma tabela num `.xlsx`, com a mesma marcação visual das falhas.
 
 ## Busca do histórico inicial (`backfill.py`)
 

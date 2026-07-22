@@ -594,20 +594,23 @@ class Assistente(tk.Tk):
         janela.transient(self)
 
     def acao_ver_historico(self):
-        """Mostra o histórico das últimas execuções (manuais e automáticas),
-        lido de ultima_execucao.json, com opção de exportar pra Excel."""
+        """Mostra TODAS as execuções automáticas já registradas (não só a
+        última de cada grupo), lidas de ultima_execucao.json -> "execucoes",
+        mais recente primeiro, com opção de exportar pra Excel."""
         arq_execucao = PASTA / "ultima_execucao.json"
         dados = json.loads(arq_execucao.read_text(encoding="utf-8")) if arq_execucao.exists() else {}
-        grupos = dados.get("grupos", {})
+        execucoes = list(reversed(dados.get("execucoes", [])))
 
         janela = tk.Toplevel(self)
         janela.title("Histórico de execuções")
-        janela.geometry("680x420")
+        janela.geometry("760x440")
         janela.grab_set()
 
         tk.Label(janela, text="Histórico de execuções", font=("Segoe UI", 12, "bold")).pack(pady=(14, 4))
+        tk.Label(janela, text="Todas as execuções automáticas registradas, mais recente primeiro.",
+                 fg="#777", font=("Segoe UI", 8)).pack()
 
-        if not grupos:
+        if not execucoes:
             tk.Label(janela, text="Nenhuma execução automática registrada ainda.", fg="#777").pack(pady=30)
             tk.Button(janela, text="Fechar", command=janela.destroy).pack(pady=10)
             janela.transient(self)
@@ -615,9 +618,10 @@ class Assistente(tk.Tk):
 
         frame_tree = tk.Frame(janela)
         frame_tree.pack(fill="both", expand=True, padx=16, pady=8)
-        colunas = [("grupo", "Grupo", 70), ("rotulo", "Execução", 140), ("competencia", "Competência", 90),
-                   ("data", "Data", 90), ("empresa", "Empresa", 190), ("status", "Status", 70)]
-        tree = ttk.Treeview(frame_tree, columns=[c[0] for c in colunas], show="headings", height=13)
+        colunas = [("data", "Data", 80), ("hora", "Hora", 55), ("grupo", "Grupo", 70),
+                   ("rotulo", "Execução", 140), ("competencia", "Competência", 90),
+                   ("empresa", "Empresa", 170), ("status", "Status", 70)]
+        tree = ttk.Treeview(frame_tree, columns=[c[0] for c in colunas], show="headings", height=14)
         for chave, titulo, largura in colunas:
             tree.heading(chave, text=titulo)
             tree.column(chave, width=largura)
@@ -628,16 +632,18 @@ class Assistente(tk.Tk):
         tree.tag_configure("falha", background="#FFC7CE")
 
         linhas = []
-        for grupo, info in grupos.items():
-            rotulo = info.get("rotulo", "-")
-            competencia = info.get("competencia", "-")
-            data_exec = info.get("data", "-")
-            for nome in info.get("empresas_ok", []):
-                linha = (grupo, rotulo, competencia, data_exec, nome, "OK")
+        for execucao in execucoes:
+            data_exec = execucao.get("data", "-")
+            hora_exec = execucao.get("hora", "-")
+            grupo = execucao.get("grupo", "-")
+            rotulo = execucao.get("rotulo", "-")
+            competencia = execucao.get("competencia", "-")
+            for nome in execucao.get("empresas_ok", []):
+                linha = (data_exec, hora_exec, grupo, rotulo, competencia, nome, "OK")
                 linhas.append(linha)
                 tree.insert("", "end", values=linha)
-            for nome in info.get("empresas_com_falha", []):
-                linha = (grupo, rotulo, competencia, data_exec, nome, "FALHOU")
+            for nome in execucao.get("empresas_com_falha", []):
+                linha = (data_exec, hora_exec, grupo, rotulo, competencia, nome, "FALHOU")
                 linhas.append(linha)
                 tree.insert("", "end", values=linha, tags=("falha",))
 
@@ -651,16 +657,16 @@ class Assistente(tk.Tk):
             wb = Workbook()
             aba = wb.active
             aba.title = "Histórico"
-            aba.append(["Grupo", "Execução", "Competência", "Data", "Empresa", "Status"])
+            aba.append(["Data", "Hora", "Grupo", "Execução", "Competência", "Empresa", "Status"])
             for cel in aba[1]:
                 cel.font = Font(bold=True, color="FFFFFF")
                 cel.fill = PatternFill("solid", fgColor="1F4E78")
             for linha in linhas:
                 aba.append(list(linha))
                 if linha[-1] == "FALHOU":
-                    for c in range(1, 7):
+                    for c in range(1, 8):
                         aba.cell(row=aba.max_row, column=c).fill = PatternFill("solid", fgColor="FFC7CE")
-            for i, largura in enumerate([12, 20, 14, 12, 34, 10], start=1):
+            for i, largura in enumerate([12, 8, 12, 20, 14, 32, 10], start=1):
                 aba.column_dimensions[get_column_letter(i)].width = largura
             aba.freeze_panes = "A2"
             wb.save(destino)

@@ -22,8 +22,15 @@ podendo ativar até 2 ao mesmo tempo:
   - QUINZENAL: um dia da semana fixo, mas só a cada 14 dias (controlado
     por "ultima_execucao_quinzenal" no rotina_estado.json).
 
-Se hoje for dia de fechamento mensal, semanal/quinzenal não rodam nesse
-dia (evita duplicar trabalho).
+Mensal fecha o mês ANTERIOR e semanal/quinzenal tratam do mês ATUAL —
+competências diferentes, então rodar os dois no mesmo dia nunca duplica
+trabalho; cada um roda no seu próprio horário, independente do outro. Se os
+dois calharem de coincidir (mesmo grupo ou grupos diferentes, e mesmo a
+retirada manual "Rodar agora"), um espera o outro terminar antes de começar
+(mutex ÚNICO pra máquina inteira) — nunca duas retiradas rodam ao mesmo
+tempo neste PC, pra não sobrecarregar o Portal Nacional com pedidos
+simultâneos (na prática já travou a resposta quando isso aconteceu, mesmo
+entre empresas diferentes).
 
 Cada passo (baixar, completar PDFs, cada relatório) tem um limite de tempo
 de segurança (TIMEOUT_PASSO_SEGUNDOS) — se uma empresa travar por qualquer
@@ -39,10 +46,14 @@ Tudo é registrado em rotina.log. Estado de controle em rotina_estado.json.
 import argparse
 import json
 import subprocess
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
+import win32event
+
 import despacho
+
+LIMITE_HISTORICO = 500  # execuções mais antigas que isso são descartadas
 
 PASTA = despacho.PASTA
 LOG = PASTA / "rotina.log"
@@ -58,9 +69,52 @@ def carregar_config() -> dict:
 
 
 def registrar(texto: str) -> None:
-    from datetime import datetime
     with open(LOG, "a", encoding="utf-8") as f:
         f.write(f"[{datetime.now():%d/%m/%Y %H:%M:%S}] {texto}\n")
+
+
+def _com_mutex_estado(func) -> None:
+    """Executa func() protegido por um mutex nomeado do Windows — evita que
+    duas execuções concorrentes (grupos ou frequências diferentes rodando ao
+    mesmo tempo) leiam e gravem rotina_estado.json/ultima_execucao.json ao
+    mesmo tempo, uma sobrescrevendo a atualização da outra. Se o processo
+    morrer com o mutex em mãos, o Windows libera sozinho pro próximo — não
+    precisa de limpeza manual."""
+    mutex = win32event.CreateMutex(None, False, "Global\\NFSeAutomatico_EstadoLock")
+    win32event.WaitForSingleObject(mutex, win32event.INFINITE)
+    try:
+        func()
+    finally:
+        win32event.ReleaseMutex(mutex)
+
+
+def com_lock_execucao_global(func):
+    """Executa func() protegido por um mutex ÚNICO pra máquina inteira —
+    garante que só UMA retirada de notas roda por vez neste PC, seja
+    agendada (mensal/semanal/quinzenal, de qualquer grupo) ou manual
+    ("Rodar agora"). Se outra já estiver rodando, esta espera terminar em
+    vez de ser pulada ou rodar em paralelo — evita pedidos simultâneos ao
+    Portal Nacional, que na prática já travou a resposta quando isso
+    aconteceu, mesmo entre empresas diferentes."""
+    mutex = win32event.CreateMutex(None, False, "Global\\NFSeAutomatico_PipelineLock")
+    if win32event.WaitForSingleObject(mutex, 0) not in (win32event.WAIT_OBJECT_0, win32event.WAIT_ABANDONED):
+        registrar("Outra retirada já está rodando nesta máquina — aguardando terminar...")
+        win32event.WaitForSingleObject(mutex, win32event.INFINITE)
+    try:
+        return func()
+    finally:
+        win32event.ReleaseMutex(mutex)
+
+
+def salvar_estado_grupo(grupo: str, dados: dict) -> None:
+    """Grava só os dados DESSE grupo em rotina_estado.json, relendo o
+    arquivo na hora (protegido por mutex) — não usa uma cópia antiga lida
+    no início da execução, que poderia já estar desatualizada."""
+    def _fazer():
+        atual = json.loads(ARQ_ESTADO.read_text(encoding="utf-8")) if ARQ_ESTADO.exists() else {}
+        atual.setdefault("grupos", {})[grupo] = dados
+        ARQ_ESTADO.write_text(json.dumps(atual, indent=2, ensure_ascii=False), encoding="utf-8")
+    _com_mutex_estado(_fazer)
 
 
 def mes_anterior(d: date) -> str:
@@ -120,32 +174,48 @@ def notificar(titulo: str, mensagem: str) -> None:
 
 
 def executar_para_todas(grupo: str, empresas: list[str], competencia: str, rotulo: str) -> None:
-    registrar(f"======== [{grupo}] {rotulo} — competência {competencia} ========")
-    resultados = {}
-    for empresa in empresas:
-        falhas = pipeline(empresa, competencia)
-        resultados[empresa] = (falhas == 0)
+    """Roda o pipeline pra todas as empresas do grupo. Protegido pelo mutex
+    global de execução (com_lock_execucao_global): se qualquer outra
+    retirada já estiver rodando neste PC — mesmo grupo, outro grupo, ou
+    manual — espera terminar antes de começar."""
+    def _rodar():
+        registrar(f"======== [{grupo}] {rotulo} — competência {competencia} ========")
+        resultados = {}
+        for empresa in empresas:
+            falhas = pipeline(empresa, competencia)
+            resultados[empresa] = (falhas == 0)
 
-    ok = [nome for nome, sucesso in resultados.items() if sucesso]
-    com_falha = [nome for nome, sucesso in resultados.items() if not sucesso]
+        ok = [nome for nome, sucesso in resultados.items() if sucesso]
+        com_falha = [nome for nome, sucesso in resultados.items() if not sucesso]
 
-    ultima_execucao = json.loads(ARQ_ULTIMA_EXECUCAO.read_text(encoding="utf-8")) if ARQ_ULTIMA_EXECUCAO.exists() else {}
-    ultima_execucao.setdefault("grupos", {})[grupo] = {
-        "rotulo": rotulo,
-        "competencia": competencia,
-        "data": date.today().isoformat(),
-        "empresas_ok": ok,
-        "empresas_com_falha": com_falha,
-    }
-    ARQ_ULTIMA_EXECUCAO.write_text(json.dumps(ultima_execucao, indent=2, ensure_ascii=False), encoding="utf-8")
+        registro = {
+            "grupo": grupo,
+            "rotulo": rotulo,
+            "competencia": competencia,
+            "data": date.today().isoformat(),
+            "hora": datetime.now().strftime("%H:%M"),
+            "empresas_ok": ok,
+            "empresas_com_falha": com_falha,
+        }
 
-    if com_falha:
-        registrar(f"======== [{grupo}] {rotulo} TERMINADO — {len(ok)} OK, {len(com_falha)} COM FALHA ========")
-        notificar("NFS-e Automático", f"[{grupo}] {rotulo.title()}: {len(ok)} empresa(s) OK, "
-                                       f"{len(com_falha)} com falha. Abra o programa para ver detalhes.")
-    else:
-        registrar(f"======== [{grupo}] {rotulo} TERMINADO COM SUCESSO ========")
-        notificar("NFS-e Automático", f"[{grupo}] {rotulo.title()}: {len(ok)} empresa(s) concluída(s) com sucesso.")
+        def _salvar_no_historico():
+            atual = json.loads(ARQ_ULTIMA_EXECUCAO.read_text(encoding="utf-8")) if ARQ_ULTIMA_EXECUCAO.exists() else {}
+            execucoes = atual.setdefault("execucoes", [])
+            execucoes.append(registro)
+            if len(execucoes) > LIMITE_HISTORICO:
+                del execucoes[:len(execucoes) - LIMITE_HISTORICO]
+            ARQ_ULTIMA_EXECUCAO.write_text(json.dumps(atual, indent=2, ensure_ascii=False), encoding="utf-8")
+        _com_mutex_estado(_salvar_no_historico)
+
+        if com_falha:
+            registrar(f"======== [{grupo}] {rotulo} TERMINADO — {len(ok)} OK, {len(com_falha)} COM FALHA ========")
+            notificar("NFS-e Automático", f"[{grupo}] {rotulo.title()}: {len(ok)} empresa(s) OK, "
+                                           f"{len(com_falha)} com falha. Abra o programa para ver detalhes.")
+        else:
+            registrar(f"======== [{grupo}] {rotulo} TERMINADO COM SUCESSO ========")
+            notificar("NFS-e Automático", f"[{grupo}] {rotulo.title()}: {len(ok)} empresa(s) concluída(s) com sucesso.")
+
+    com_lock_execucao_global(_rodar)
 
 
 def main() -> None:
@@ -165,10 +235,10 @@ def main() -> None:
 
     hoje = date.today()
     estado_completo = json.loads(ARQ_ESTADO.read_text(encoding="utf-8")) if ARQ_ESTADO.exists() else {}
-    estado = estado_completo.setdefault("grupos", {}).setdefault(args.grupo, {})
+    estado = estado_completo.get("grupos", {}).get(args.grupo, {})
 
     def salvar_estado():
-        ARQ_ESTADO.write_text(json.dumps(estado_completo, indent=2, ensure_ascii=False), encoding="utf-8")
+        salvar_estado_grupo(args.grupo, estado)
 
     # ---- MENSAL: dia fixo do mês, fecha o mês anterior, com recuperação de atraso
     cfg_mensal = agenda.get("mensal", {})
@@ -194,22 +264,19 @@ def main() -> None:
 
     competencia_atual = f"{hoje.year:04d}-{hoje.month:02d}"
 
-    # ---- SEMANAL: um dia da semana, toda semana
+    # ---- SEMANAL: um dia da semana, toda semana — roda independente do
+    # mensal (competências diferentes, nunca duplica trabalho)
     cfg_semanal = agenda.get("semanal", {})
-    if args.modo in ("auto", "semanal") and cfg_semanal.get("ativo"):
-        if cfg_mensal.get("ativo") and eh_dia_de_fechamento:
-            registrar(f"[{args.grupo}] Hoje também é dia de fechamento mensal; pulando a retirada semanal.")
-        elif hoje.weekday() == cfg_semanal.get("dia_semana"):
-            registrar(f"[{args.grupo}] Hoje é dia de retirada semanal do mês atual.")
-            executar_para_todas(args.grupo, empresas, competencia_atual, "RETIRADA SEMANAL")
-            return
+    if (args.modo in ("auto", "semanal") and cfg_semanal.get("ativo")
+            and hoje.weekday() == cfg_semanal.get("dia_semana")):
+        registrar(f"[{args.grupo}] Hoje é dia de retirada semanal do mês atual.")
+        executar_para_todas(args.grupo, empresas, competencia_atual, "RETIRADA SEMANAL")
+        return
 
-    # ---- QUINZENAL: um dia da semana, só a cada 14 dias
+    # ---- QUINZENAL: um dia da semana, só a cada 14 dias — roda independente
+    # do mensal (competências diferentes, nunca duplica trabalho)
     cfg_quinzenal = agenda.get("quinzenal", {})
     if args.modo in ("auto", "quinzenal") and cfg_quinzenal.get("ativo"):
-        if cfg_mensal.get("ativo") and eh_dia_de_fechamento:
-            registrar(f"[{args.grupo}] Hoje também é dia de fechamento mensal; pulando a retirada quinzenal.")
-            return
         ultima = estado.get("ultima_execucao_quinzenal")
         ultima_data = date.fromisoformat(ultima) if ultima else None
         due_por_data = ultima_data is None or (hoje - ultima_data).days >= 14

@@ -6,7 +6,9 @@ fora do ciclo do agendamento: não lê nem grava
 rotina_estado.json/ultima_execucao.json, então não atrasa nem antecipa
 nenhum fechamento automático. Reaproveita o mesmo pipeline() de rotina.py
 (mesmo timeout de segurança e short-circuit), uma empresa de cada vez, com
-UMA notificação final resumindo o total.
+UMA notificação final resumindo o total. Protegida pelo mesmo mutex global
+de rotina.py — se uma retirada agendada já estiver rodando neste PC,
+espera terminar antes de começar (nunca roda ao mesmo tempo que outra).
 
 Uso:
   python assistente.py executar_agora --empresas "NOME1,NOME2" --competencia 2026-05
@@ -27,11 +29,15 @@ def main() -> int:
 
     nomes = [n.strip() for n in args.empresas.split(",") if n.strip()]
 
-    rotina.registrar(f"======== RETIRADA MANUAL — {len(nomes)} empresa(s) — competência {args.competencia} ========")
-    ok, com_falha = [], []
-    for nome in nomes:
-        falhas = rotina.pipeline(nome, args.competencia)
-        (ok if falhas == 0 else com_falha).append(nome)
+    def _rodar():
+        rotina.registrar(f"======== RETIRADA MANUAL — {len(nomes)} empresa(s) — competência {args.competencia} ========")
+        ok, com_falha = [], []
+        for nome in nomes:
+            falhas = rotina.pipeline(nome, args.competencia)
+            (ok if falhas == 0 else com_falha).append(nome)
+        return ok, com_falha
+
+    ok, com_falha = rotina.com_lock_execucao_global(_rodar)
 
     if com_falha:
         rotina.registrar(f"======== RETIRADA MANUAL TERMINADA — {len(ok)} OK, {len(com_falha)} COM FALHA ========")
