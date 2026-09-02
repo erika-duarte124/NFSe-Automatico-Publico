@@ -1,0 +1,47 @@
+{
+  "ambiente": "producao",
+  "pasta_saida": "C:/Users/SEU_USUARIO/Downloads/NFSe-Automatico",
+  "avisar_cert_vencido": true,
+  "webhook_chat": "",
+  "periodo_inicial": {
+    "tipo": "completo"
+  },
+  "grupos": [
+    {
+      "nome": "Grupo A",
+      "agendamento": {
+        "mensal":    {"ativo": true,  "dia_mes": 1, "hora": "09:00"},
+        "semanal":   {"ativo": false, "dia_semana": 2, "hora": "09:00"},
+        "quinzenal": {"ativo": false, "dia_semana": 2, "hora": "09:00"}
+      },
+      "empresas": [
+        {
+          "nome": "EMPRESA MODELO LTDA",
+          "cnpj": "12345678000199",
+          "certificado": "C:/Certificados/empresa_modelo.pfx",
+          "senha": "senha-do-certificado",
+          "usar_cnpj_consulta": false,
+          "cert_validade": "2027-01-01"
+        }
+      ]
+    },
+    {
+      "nome": "Grupo B",
+      "agendamento": {
+        "mensal":    {"ativo": true,  "dia_mes": 5, "hora": "20:00"},
+        "semanal":   {"ativo": true,  "dia_semana": 4, "hora": "19:00"},
+        "quinzenal": {"ativo": false, "dia_semana": 4, "hora": "19:00"}
+      },
+      "empresas": [
+        {
+          "nome": "OUTRA EMPRESA MODELO LTDA",
+          "cnpj": "98765432000155",
+          "certificado": "C:/Certificados/outra_empresa_modelo.pfx",
+          "senha": null,
+          "usar_cnpj_consulta": false,
+          "cert_validade": null
+        }
+      ]
+    }
+  ]
+}

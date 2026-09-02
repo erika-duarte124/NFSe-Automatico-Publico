@@ -1,0 +1,8 @@
+requests
+requests-pkcs12
+openpyxl
+reportlab
+qrcode
+cryptography
+pywin32
+win11toast
